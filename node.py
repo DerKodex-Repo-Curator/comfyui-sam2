@@ -24,8 +24,13 @@ import glob
 import folder_paths
 from hydra import initialize
 from hydra.core.global_hydra import GlobalHydra
+from typing_extensions import override
+from comfy_api.latest import ComfyExtension, io
 
 logger = logging.getLogger("ComfyUI-SAM2")
+
+SAM2Model = io.Custom("SAM2_MODEL")
+GroundingDinoModel = io.Custom("GROUNDING_DINO_MODEL")
 
 sam_model_dir_name = "sam2"
 sam_model_list = {
@@ -265,64 +270,79 @@ def offload_models(sam_model, grounding_dino_model, keep_model_loaded):
         grounding_dino_model.to(device=device)
         comfy.model_management.soft_empty_cache()
 
-class SAM2ModelLoader:
+class SAM2ModelLoader(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model_name": (list_sam_model(),),
-            }
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SAM2ModelLoader (segment anything2)",
+            display_name="SAM2 Model Loader",
+            category="segment_anything2",
+            inputs=[io.Combo.Input("model_name", options=list_sam_model())],
+            outputs=[SAM2Model.Output()],
+        )
 
-    CATEGORY = "segment_anything2"
-    FUNCTION = "main"
-    RETURN_TYPES = ("SAM2_MODEL",)
-
-    def main(self, model_name):
+    @classmethod
+    def execute(cls, model_name):
         sam_model = load_sam_model(model_name)
-        return (sam_model,)
+        return io.NodeOutput(sam_model)
 
 
-class GroundingDinoModelLoader:
+class GroundingDinoModelLoader(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model_name": (list_groundingdino_model(),),
-            }
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="GroundingDinoModelLoader (segment anything2)",
+            display_name="Grounding Dino Model Loader",
+            category="segment_anything2",
+            inputs=[
+                io.Combo.Input(
+                    "model_name",
+                    options=list_groundingdino_model(),
+                )
+            ],
+            outputs=[GroundingDinoModel.Output()],
+        )
 
-    CATEGORY = "segment_anything2"
-    FUNCTION = "main"
-    RETURN_TYPES = ("GROUNDING_DINO_MODEL",)
-
-    def main(self, model_name):
+    @classmethod
+    def execute(cls, model_name):
         dino_model = load_groundingdino_model(model_name)
-        return (dino_model,)
+        return io.NodeOutput(dino_model)
 
 
-class GroundingDinoSAM2Segment:
+class GroundingDinoSAM2Segment(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sam_model": ("SAM2_MODEL", {}),
-                "grounding_dino_model": ("GROUNDING_DINO_MODEL", {}),
-                "image": ("IMAGE", {}),
-                "prompt": ("STRING", {}),
-                "threshold": (
-                    "FLOAT",
-                    {"default": 0.3, "min": 0, "max": 1.0, "step": 0.01},
+    def define_schema(cls):
+        return io.Schema(
+            node_id="GroundingDinoSAM2Segment (segment anything2)",
+            display_name="Grounding Dino SAM2 Segment",
+            category="segment_anything2",
+            inputs=[
+                SAM2Model.Input("sam_model"),
+                GroundingDinoModel.Input("grounding_dino_model"),
+                io.Image.Input("image"),
+                io.String.Input("prompt"),
+                io.Float.Input(
+                    "threshold",
+                    default=0.3,
+                    min=0,
+                    max=1.0,
+                    step=0.01,
                 ),
-                "keep_model_loaded": ("BOOLEAN", {"default": False}),
-            }
-        }
+                io.Boolean.Input("keep_model_loaded", default=False),
+            ],
+            outputs=[io.Image.Output(), io.Mask.Output()],
+        )
 
-    CATEGORY = "segment_anything2"
-    FUNCTION = "main"
-    RETURN_TYPES = ("IMAGE", "MASK")
-
-    def main(self, grounding_dino_model, sam_model, image, prompt, threshold, keep_model_loaded):
+    @classmethod
+    def execute(
+        cls,
+        grounding_dino_model,
+        sam_model,
+        image,
+        prompt,
+        threshold,
+        keep_model_loaded,
+    ):
         device = comfy.model_management.get_torch_device()
         sam_model.to(device=device)
         grounding_dino_model.to(device=device)
@@ -346,43 +366,55 @@ class GroundingDinoSAM2Segment:
             )
 
             offload_models(sam_model, grounding_dino_model, keep_model_loaded)
-            return (empty_mask, empty_mask)
+            return io.NodeOutput(empty_mask, empty_mask)
 
         offload_models(sam_model, grounding_dino_model, keep_model_loaded)
-        return (torch.cat(res_images, dim=0), torch.cat(res_masks, dim=0))
+        return io.NodeOutput(torch.cat(res_images, dim=0), torch.cat(res_masks, dim=0))
 
-class InvertMask:
+class InvertMask(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "mask": ("MASK",),
-            }
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="InvertMask (segment anything)",
+            display_name="Invert Mask",
+            category="segment_anything2",
+            inputs=[io.Mask.Input("mask")],
+            outputs=[io.Mask.Output()],
+        )
 
-    CATEGORY = "segment_anything2"
-    FUNCTION = "main"
-    RETURN_TYPES = ("MASK",)
-
-    def main(self, mask):
+    @classmethod
+    def execute(cls, mask):
         out = 1.0 - mask
-        return (out,)
+        return io.NodeOutput(out)
 
 
-class IsMaskEmptyNode:
+class IsMaskEmptyNode(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "mask": ("MASK",),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="IsMaskEmpty",
+            display_name="Is Mask Empty",
+            category="segment_anything2",
+            inputs=[io.Mask.Input("mask")],
+            outputs=[io.Int.Output("boolean_number")],
+        )
 
-    RETURN_TYPES = ["NUMBER"]
-    RETURN_NAMES = ["boolean_number"]
+    @classmethod
+    def execute(cls, mask):
+        return io.NodeOutput(torch.all(mask == 0).int().item())
 
-    FUNCTION = "main"
-    CATEGORY = "segment_anything2"
 
-    def main(self, mask):
-        return (torch.all(mask == 0).int().item(),)
+class SAM2Extension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            SAM2ModelLoader,
+            GroundingDinoModelLoader,
+            GroundingDinoSAM2Segment,
+            InvertMask,
+            IsMaskEmptyNode,
+        ]
+
+
+async def comfy_entrypoint() -> SAM2Extension:
+    return SAM2Extension()
